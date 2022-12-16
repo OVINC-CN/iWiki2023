@@ -1,15 +1,14 @@
-import json
 from typing import Union
 
-import requests
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from rest_framework.authentication import BaseAuthentication, SessionAuthentication
 
-from core.constants import OVINC_APP_HEADER, OVINC_AUTH_URL, OVINC_TOKEN
 from core.exceptions import LoginRequired
 from core.logger import logger
+from core.models import Empty
+from ovinc.client import ovinc_client
 
 USER_MODEL = get_user_model()
 
@@ -38,25 +37,19 @@ class SessionAuthenticate(SessionAuthentication):
         # OSB Auth
         try:
             # Request
-            result = requests.post(
-                settings.OVINC_API_DOMAIN.rstrip("/") + OVINC_AUTH_URL,
-                json={OVINC_TOKEN: token},
-                headers={
-                    OVINC_APP_HEADER: json.dumps({"app_code": settings.APP_CODE, "app_secret": settings.APP_SECRET})
-                },
-            ).json()
-            # Create User
-            if result.get("data") and result["data"].get("username"):
-                username = result["data"]["username"]
-                user = USER_MODEL.objects.get_or_create(username=username)[0]
-                for key, val in result["data"].items():
-                    setattr(user, key, val)
-                user.save(update_fields=result["data"].keys())
-                cache.set(token, user)
-                return self.check_token(token)
-            else:
+            result = ovinc_client.account.verify_token(token)
+            # Verify Failed
+            if isinstance(result, Empty):
                 logger.info("[OSBAuthFailed] Result => %s", result)
                 return None
+            # Create User
+            username = result["data"]["username"]
+            user = USER_MODEL.objects.get_or_create(username=username)[0]
+            for key, val in result["data"].items():
+                setattr(user, key, val)
+            user.save(update_fields=result["data"].keys())
+            cache.set(token, user)
+            return self.check_token(token)
         except Exception as err:
             logger.exception(err)
             return None
